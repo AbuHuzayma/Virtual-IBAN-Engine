@@ -1,0 +1,31 @@
+@startuml Reconciliation
+actor "Scheduler / Cron" as Cron
+participant "Reconciliation Worker" as Worker
+database "Ledger DB" as DB
+participant "T24 Adapter" as ADAPTER
+participant "Temenos T24" as T24
+actor Admin
+
+Cron -> Worker : Trigger daily reconciliation (per pool)
+activate Worker
+
+Worker -> ADAPTER : Request statement for pool_account_id\n(date range)
+ADAPTER -> T24 : Pull bank statements
+T24 --> ADAPTER : Statement file / transactions
+ADAPTER --> Worker : Parsed statement (transactions)
+
+Worker -> DB : Fetch engine transactions (pending/unmatched)
+Worker -> Worker : Match by t24_ref, amount, timestamp fuzziness
+alt Matched
+  Worker -> DB : Mark matched, reconcile balances, clear holds
+else Unmatched
+  Worker -> DB : Create exception records
+  Worker -> Admin : Create alert / report
+end
+
+Worker -> DB : Persist reconciliation report
+Worker -> Admin : Upload report for review
+deactivate Worker
+
+@enduml
+

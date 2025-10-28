@@ -1,0 +1,35 @@
+@startuml ExternalTransfer
+actor Merchant
+participant "API: Transfer Service" as API
+participant "Ledger DB" as DB
+participant "T24 Adapter" as ADAPTER
+participant "Temenos T24" as T24
+participant "Notification / Webhook" as Notification
+
+Merchant -> API : POST /transfers\n(vA@Pool1 -> vB@Pool2, amount)\nIdempotency-Key
+activate API
+
+API -> DB : Begin TX\nCreate transaction (PENDING)\nCreate hold: debit available from source
+API -> DB : Commit TX (holds in place)
+
+API -> ADAPTER : Initiate T24 Transfer\n(payload with transactionId)
+activate ADAPTER
+ADAPTER -> T24 : Call T24 API (mTLS/HSM signed)
+deactivate ADAPTER
+
+note over API,T24: T24 may respond sync/async\nIf sync success -> proceed\nIf async -> wait for callback
+
+T24 -> API : Callback / Webhook (transfer success)\ncontains t24_ref, transactionId
+activate API
+API -> DB : Begin TX\nCreate credit ledger entries\nRelease holds\nMark transaction COMPLETED (link t24_ref)
+API -> DB : Commit TX
+API --> Merchant : Notify via webhook or update GET /transfers/{id}
+deactivate API
+
+T24 -> API : Callback (failure)
+activate API
+API -> DB : Rollback holds\nMark transaction FAILED\nNotify merchant
+deactivate API
+
+@enduml
+

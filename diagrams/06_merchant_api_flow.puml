@@ -1,0 +1,46 @@
+@startuml MerchantAPI
+actor Merchant
+participant "API Gateway" as GW
+participant "VIBAN Service" as VIBAN
+database "Ledger DB" as DB
+participant "T24 Adapter" as ADAPTER
+actor "Merchant Webhook" as WH
+
+== Create Virtual IBAN ==
+Merchant -> GW : POST /merchants/{id}/virtual-ibans
+GW -> VIBAN : Create IBAN request
+VIBAN -> DB : Insert virtual_iban
+VIBAN --> GW : 201 Created {virtualIbanId, IBAN}
+GW --> Merchant : 201 Created
+
+== Incoming Bank Credit ==
+T24 -> ADAPTER : Bank inbound notify (webhook)
+ADAPTER -> VIBAN : Map IBAN -> virtualIbanId
+VIBAN -> DB : Create credit ledger entry\nUpdate balances
+VIBAN -> WH : Notify merchant webhook (credit received)
+
+== Transfer between IBANs ==
+Merchant -> GW : POST /transfers
+GW -> VIBAN : Execute transfer (internal/external)
+alt internal
+  VIBAN -> DB : Debit/Credit ledger entries
+  VIBAN --> GW : 200 COMPLETED
+else external
+  VIBAN -> DB : Create hold (PENDING)
+  VIBAN -> ADAPTER : Initiate T24 transfer
+  ADAPTER -> T24 : Transfer request
+  T24 -> ADAPTER : Callback success/fail
+  ADAPTER -> VIBAN : Callback
+  VIBAN -> DB : Finalize / rollback
+  VIBAN -> WH : Notify merchant webhook of final status
+end
+GW --> Merchant : return immediate response (COMPLETED or PENDING)
+
+== Statement Request ==
+Merchant -> GW : GET /virtual-ibans/{id}/statements
+GW -> VIBAN : Query transactions (pagination)
+VIBAN -> DB : Fetch ledger_entries
+VIBAN --> GW : Return list & balance
+GW --> Merchant : 200 OK {transactions, balance}
+@enduml
+

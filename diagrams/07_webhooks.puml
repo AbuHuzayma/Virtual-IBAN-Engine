@@ -1,0 +1,27 @@
+@startuml Webhooks
+actor "Temenos T24" as T24
+participant "T24 Adapter" as Adapter
+participant "Virtual IBAN Engine" as Engine
+actor "Merchant Webhook Endpoint" as MerchantWH
+
+== T24 -> Engine (inbound) ==
+T24 -> Adapter : Send webhook (signed)
+Adapter -> Engine : Validate signature/mTLS\nMap to transactionId
+Engine -> Engine : Process event (credit / transfer status)
+Engine -> Adapter : Ack (200)
+
+== Engine -> Merchant ==
+Engine -> MerchantWH : POST /merchant/webhooks\n(event: tx.completed)
+activate Engine
+MerchantWH --> Engine : 200 OK
+deactivate Engine
+
+note right of Engine
+Security:
+ - Validate signatures (HMAC or mTLS)
+ - Replay protection: check event_id
+ - Idempotency: store processed event ids
+end note
+
+@enduml
+

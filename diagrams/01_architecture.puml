@@ -1,0 +1,21 @@
+@startuml Architecture
+skinparam backgroundColor #F8F9FB
+skinparam componentStyle rectangle
+
+actor Merchant
+rectangle "Virtual IBAN Engine API\n(API Gateway / Services)" as API
+database "Ledger & DB\n(Postgres / Ledger)" as DB
+rectangle "Async Workers\nReconciliation / Queue" as Workers
+rectangle "Temenos T24\n(Core Banking)" as T24
+actor Admin
+
+Merchant --> API : REST / gRPC
+API --> DB : Read/Write ledger & metadata
+API --> Workers : Enqueue async tasks
+Workers --> T24 : Initiate / poll / reconcile
+T24 --> Workers : Webhook / Callback
+Admin --> API : Admin UI / Reports
+API --> T24 : mTLS / Signed requests
+
+@enduml
+

@@ -1,0 +1,83 @@
+@startuml ERD
+!theme plain
+
+entity "merchants" as m {
+  * merchant_id : UUID
+  --
+  name : text
+  pool_account_id : UUID
+  currency : char(3)
+  created_at : timestamptz
+  metadata : jsonb
+}
+
+entity "pool_accounts" as p {
+  * pool_account_id : UUID
+  --
+  merchant_id : UUID
+  bank_account_ref : text
+  balance_amount : numeric
+  currency : char(3)
+  last_reconciled_at : timestamptz
+}
+
+entity "virtual_ibans" as v {
+  * virtual_iban_id : UUID
+  --
+  merchant_id : UUID
+  iban : text
+  name : text
+  status : text
+  currency : char(3)
+  created_at : timestamptz
+  metadata : jsonb
+}
+
+entity "transactions" as t {
+  * transaction_id : UUID
+  --
+  type : text
+  status : text
+  from_account : text
+  to_account : text
+  amount : numeric
+  currency : char(3)
+  idempotency_key : text
+  t24_ref : text
+  created_at : timestamptz
+  updated_at : timestamptz
+}
+
+entity "ledger_entries" as l {
+  * entry_id : UUID
+  --
+  transaction_id : UUID
+  account_type : text
+  account_id : UUID
+  debit : numeric
+  credit : numeric
+  balance_after : numeric
+  timestamp : timestamptz
+  narration : text
+  metadata : jsonb
+}
+
+entity "t24_events" as e {
+  * t24_event_id : UUID
+  --
+  payload : jsonb
+  received_at : timestamptz
+  status : text
+  processed_at : timestamptz
+  related_transaction_id : UUID
+}
+
+m ||--o{ p : has
+m ||--o{ v : issues
+p ||--o{ l : holds
+v ||--o{ l : "posts ledger entries"
+t ||--o{ l : "grouped entries"
+t ||--o{ e : "may reference"
+
+@enduml
+

@@ -1,0 +1,22 @@
+@startuml InternalTransfer
+actor Merchant
+participant "API: Transfer Service" as API
+participant "Ledger DB" as DB
+participant "Notification / Webhook" as Notification
+
+Merchant -> API : POST /transfers\n(fromVirtualIban,toVirtualIban,amount)\nIdempotency-Key
+activate API
+
+API -> DB : Begin TX\nValidate accounts & balances
+API -> DB : Debit source virtual IBAN (ledger entry)
+API -> DB : Credit destination virtual IBAN (ledger entry)
+API -> DB : Commit TX
+API -> DB : Update cached balances (optional)
+API --> Merchant : 200 COMPLETED\ntransactionId, balances
+deactivate API
+
+API -> Notification : Emit event (tx.completed)
+Notification --> Merchant : Optional webhook
+
+@enduml
+
