@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Virtual IBAN Engine - Specification</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #ffffff;
+        }
+        h1 {
+            color: #1a73e8;
+            border-bottom: 3px solid #1a73e8;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #2c5aa0;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 5px;
+            margin-top: 30px;
+        }
+        h3 {
+            color: #555;
+            margin-top: 20px;
+        }
+        code {
+            background-color: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        pre {
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            overflow-x: auto;
+        }
+        pre code {
+            background-color: transparent;
+            padding: 0;
+        }
+        .diagram-note {
+            background-color: #fff9e6;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 15px 0;
+            font-style: italic;
+        }
+        .plantuml-block {
+            background-color: #f9f9f9;
+            border: 2px dashed #ccc;
+            padding: 10px;
+            margin: 15px 0;
+            font-family: monospace;
+            font-size: 0.85em;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #1a73e8;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .section {
+            margin: 30px 0;
+        }
+        .highlight-box {
+            background-color: #e8f0fe;
+            border-left: 4px solid #1a73e8;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .diagram-container {
+            margin: 20px 0;
+            border: 2px solid #1a73e8;
+            border-radius: 5px;
+            padding: 15px;
+            background-color: #f0f7ff;
+        }
+        .diagram-placeholder {
+            text-align: center;
+            padding: 30px;
+            border: 2px dashed #1a73e8;
+            border-radius: 3px;
+            background-color: white;
+        }
+        .diagram-placeholder p {
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Virtual IBAN Engine — Requirements, Design & API Specification</h1>
+
+<div class="section">
+    <h2>1. Goal</h2>
+    <div class="highlight-box">
+        <strong>Provide a robust, auditable engine for creating and managing Virtual IBANs for merchants, keeping per-merchant pool account balances and transactions, integrating with Temenos T24 for inter-pool/real bank transfers, and exposing merchant APIs.</strong>
+    </div>
+</div>
+
+<div class="section">
+    <h2>2. Actors</h2>
+    <ul>
+        <li><strong>Merchant</strong> — owns one Pool Account and many Virtual IBANs.</li>
+        <li><strong>Virtual IBAN</strong> — internal identifier mapped to a merchant; used to receive/pay funds.</li>
+        <li><strong>Engine</strong> — manages virtual ledger, balances, API, business rules, and T24 integration.</li>
+        <li><strong>Temenos T24 (T24)</strong> — core banking system that executes inter-pool (real bank) transfers when needed.</li>
+        <li><strong>Admin / Ops</strong> — system operators for reconciliation, monitoring, reporting.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>3. High-level Functional Requirements</h2>
+    <h3>3.1 Pool Account per Merchant</h3>
+    <ul>
+        <li>Each merchant has one pool account in the bank (T24-managed real pool account).</li>
+    </ul>
+    
+    <h3>3.2 Virtual IBANs</h3>
+    <ul>
+        <li>Create single and bulk Virtual IBANs per merchant.</li>
+        <li>Metadata: name, notes, status (active/blocked/closed), createdAt, tags.</li>
+    </ul>
+    
+    <h3>3.3 Balances & Transactions</h3>
+    <p>Engine maintains ledger for:</p>
+    <ul>
+        <li>Virtual IBAN balances.</li>
+        <li>Pool account balance (reflects sum of virtual IBANs + pending).</li>
+    </ul>
+    <p>Transactions can be:</p>
+    <ul>
+        <li><strong>Internal:</strong> Virtual IBAN → Virtual IBAN (same pool) — handled internally by engine.</li>
+        <li><strong>External:</strong> Virtual IBAN → Virtual IBAN (different pool) — engine must call T24 to execute, then reflect balances.</li>
+        <li><strong>Credit IBAN</strong> (external deposit / top-up) — engine receives credit events and credits a Virtual IBAN.</li>
+        <li><strong>Debit / Payout</strong> — trigger T24 if funds leave the pooled network.</li>
+    </ul>
+    
+    <h3>3.4 T24 Integration</h3>
+    <ul>
+        <li>Engine issues transfer requests to T24 for cross-pool transactions / settlement.</li>
+        <li>Engine consumes T24 callbacks / notifications (webhooks) to confirm settlement and update ledger.</li>
+    </ul>
+    
+    <h3>3.5 Merchant APIs</h3>
+    <ul>
+        <li>Create IBAN (single & batch).</li>
+        <li>Transfer money between Virtual IBANs.</li>
+        <li>Credit IBAN.</li>
+        <li>Statement inquiry by Virtual IBAN or Merchant (Pool) with pagination/filters.</li>
+        <li>Additional recommended APIs (see section 7).</li>
+    </ul>
+    
+    <h3>3.6 Accounting Principles</h3>
+    <ul>
+        <li>Use double-entry ledger model to guarantee consistency and auditability.</li>
+        <li>Idempotency on all money-moving operations.</li>
+    </ul>
+    
+    <h3>3.7 Operational</h3>
+    <ul>
+        <li>Reconciliation process with T24, audit logs, and admin reports.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>4. Non-functional Requirements</h2>
+    <ul>
+        <li><strong>Consistency & Correctness:</strong> Strong consistency for ledger operations, atomic transfers.</li>
+        <li><strong>Durability:</strong> All transactions persisted and replicated.</li>
+        <li><strong>Scalability:</strong> Handle thousands of virtual IBANs per merchant and high Tx/sec for transfers.</li>
+        <li><strong>Performance:</strong> Internal (same pool) transfers: sub-100ms typical. External: depends on T24.</li>
+        <li><strong>Availability:</strong> 99.9%+; scheduled maintenance windows.</li>
+        <li><strong>Security & Compliance:</strong> TLS, mTLS for T24, OAuth2/JWT for merchant APIs, PCI/AML/KYC controls where applicable.</li>
+        <li><strong>Observability:</strong> Audit trail, metrics, tracing, alerting.</li>
+        <li><strong>Idempotency:</strong> Transaction endpoints must be idempotent via idempotency keys.</li>
+        <li><strong>Concurrency control:</strong> Use optimistic locking or ledger-based atomic operations.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>5. Important Business & Technical Assumptions</h2>
+    <ul>
+        <li>Each merchant has exactly one bank pool account in T24.</li>
+        <li>T24 is the source of truth for <em>real</em> bank balances; the engine holds an internal representation that is reconciled to T24.</li>
+        <li>IBAN generation may either be produced by T24 or generated by the engine following bank-approved formats (confirm with bank). (If T24 issues IBANs, the engine should request them from T24.)</li>
+        <li>T24 supports synchronous API calls for transfers and asynchronous callbacks for settlement status.</li>
+        <li>All currency handling uses ISO-4217 codes; multi-currency support recommended (explicit about FX outside scope unless required).</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>6. Core Design & Ledger Model</h2>
+    
+    <h3>6.1 System Architecture Overview</h3>
+    <p>The following diagram illustrates the overall system architecture:</p>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <img src="diagrams/01_architecture.png" alt="System Architecture Diagram" style="max-width: 100%; height: auto;" />
+        <p><strong>Diagram 1: System Architecture</strong></p>
+    </div>
+    
+    <h3>6.2 Double-entry Ledger (Recommended)</h3>
+    <p>Maintain a ledger of accounting entries:</p>
+    <p>Table: <code>ledger_entries</code> with:</p>
+    <ul>
+        <li><code>id</code>, <code>transaction_id</code>, <code>timestamp</code>, <code>account_type</code> (VIRTUAL_IBAN | POOL_ACCOUNT | T24_HOLD), <code>account_id</code> (virtual_iban_id or pool_account_id), <code>debit</code>, <code>credit</code>, <code>balance_after</code>, <code>narration</code>, <code>metadata</code>.</li>
+    </ul>
+    <p>A transfer is implemented as <em>two</em> ledger entries: debit one account, credit the other — grouped by <code>transaction_id</code>. This guarantees traceability and enables reconciliation.</p>
+    
+    <h3>6.3 Concurrency & Balance Checks</h3>
+    <ul>
+        <li>For internal transfers: perform atomic debit+credit in a DB transaction with serializable or repeatable-read isolation or using optimistic locking (version field).</li>
+        <li>Use <em>reserve</em> / <em>hold</em> entries for pending external transfers (to avoid double spending while waiting for T24).</li>
+    </ul>
+    
+    <h3>6.4 Database Schema (ERD)</h3>
+    <div style="text-align: center; margin: 30px 0;">
+        <img src="diagrams/04_database_erd.png" alt="Database ERD Diagram" style="max-width: 100%; height: auto;" />
+        <p><strong>Diagram 4: Database ERD</strong></p>
+    </div>
+</div>
+
+<div class="section">
+    <h2>7. Suggested API Surface (REST JSON)</h2>
+    <p>Base: <code>https://api.example.com/v1</code></p>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <img src="diagrams/06_merchant_api_flow.png" alt="Merchant API Interaction Flow" style="max-width: 100%; height: auto;" />
+        <p><strong>Diagram 6: Merchant API Interaction Flow</strong></p>
+    </div>
+    
+    <h3>7.1 Authentication & Headers</h3>
+    <ul>
+        <li><code>Authorization: Bearer &lt;JWT&gt;</code></li>
+        <li><code>Idempotency-Key: &lt;uuid&gt;</code> for money-moving endpoints (create transfers, credit).</li>
+        <li><code>X-Request-ID: &lt;uuid&gt;</code> optional for tracing.</li>
+        <li><code>Accept: application/json</code>, <code>Content-Type: application/json</code></li>
+    </ul>
+    
+    <h3>7.2 Create Single Virtual IBAN</h3>
+    <p><code>POST /merchants/{merchantId}/virtual-ibans</code></p>
+    <p><strong>Request:</strong></p>
+    <pre><code>{
+  "name": "Customer Acct 1001",
+  "notes": "Payroll account for project X",
+  "currency": "EUR",
+  "metadata": {"customerRef": "CUST-1001"}
+}</code></pre>
+    
+    <p><strong>Response 201:</strong></p>
+    <pre><code>{
+  "virtualIbanId": "viban_123",
+  "iban": "GB33BUKB20201555555555",
+  "merchantId": "m_123",
+  "status": "ACTIVE",
+  "createdAt": "2025-10-28T12:00:00Z"
+}</code></pre>
+    
+    <h3>7.3 Create Bulk Virtual IBANs</h3>
+    <p><code>POST /merchants/{merchantId}/virtual-ibans/bulk</code></p>
+    <p><strong>Request:</strong></p>
+    <pre><code>{
+  "items": [
+    {"name":"A","notes":"n","currency":"EUR"},
+    {"name":"B","notes":"n2","currency":"EUR"}
+  ]
+}</code></pre>
+    
+    <p><strong>Response 200:</strong></p>
+    <pre><code>{
+  "results": [
+    {"index":0, "status":"CREATED", "virtualIbanId":"v_1", "iban":"..."},
+    {"index":1, "status":"CREATED", "virtualIbanId":"v_2", "iban":"..."}
+  ]
+}</code></pre>
+    
+    <p>Bulk operations should be <strong>asynchronous</strong> if creating many IBANs; include <code>operationId</code> and <code>GET /operations/{operationId}</code>.</p>
+    
+    <h3>7.4 Get Virtual IBAN Details</h3>
+    <p><code>GET /virtual-ibans/{virtualIbanId}</code></p>
+    <p><strong>Response:</strong></p>
+    <pre><code>{
+  "virtualIbanId":"v_123",
+  "iban":"GBxx...",
+  "merchantId":"m_123",
+  "status":"ACTIVE",
+  "balance": {"amount": 1000.00, "currency":"EUR"},
+  "createdAt":"..."
+}</code></pre>
+    
+    <h3>7.5 Money Transfer Between Virtual IBANs</h3>
+    <p><code>POST /transfers</code></p>
+    <p><strong>Request:</strong></p>
+    <pre><code>{
+  "fromVirtualIbanId": "v_abc",
+  "toVirtualIbanId": "v_def",
+  "amount": 250.00,
+  "currency": "EUR",
+  "reference": "INV-2025-001",
+  "metadata": {"orderId":"O123"}
+}</code></pre>
+    
+    <p><strong>Behavior:</strong></p>
+    <ul>
+        <li>If both IBANs belong to same merchant/pool → engine executes internal transfer (no T24 call).</li>
+        <li>If belong to different merchants/pools → engine:
+            <ul>
+                <li>Create a pending ledger hold debit on source virtual IBAN and pool.</li>
+                <li>Call T24 transfer API to move funds from source pool to destination pool (or make appropriate clearing).</li>
+                <li>On T24 success callback, create credit ledger entries and release holds; on failure, rollback holds and notify.</li>
+            </ul>
+        </li>
+    </ul>
+    
+    <p><strong>Response (accepted / 201):</strong></p>
+    <pre><code>{
+  "transactionId": "tx_123",
+  "status": "PENDING",  // PENDING if external, COMPLETED if internal
+  "fromBalanceAfter": {"amount": 750.00, "currency":"EUR"}
+}</code></pre>
+    
+    <h3>7.6 Credit IBAN (External Deposit / Top-up)</h3>
+    <p><code>POST /virtual-ibans/{virtualIbanId}/credit</code></p>
+    <p><strong>Request:</strong></p>
+    <pre><code>{
+  "amount": 500.00,
+  "currency": "EUR",
+  "source": {"type":"BANK_INCOMING", "reference":"bankRef123"},
+  "metadata": {}
+}</code></pre>
+    
+    <p>Typically flows from T24 inbound notification; endpoint can be used by bank webhook to credit an IBAN.</p>
+    
+    <p><strong>Response 200:</strong></p>
+    <pre><code>{"transactionId":"tx_cred_1","status":"COMPLETED"}</code></pre>
+    
+    <h3>7.7 Statement / Transactions Inquiry by Virtual IBAN</h3>
+    <p><code>GET /virtual-ibans/{virtualIbanId}/statements?from=2025-01-01&to=2025-10-28&page=1&size=50</code></p>
+    <p><strong>Response:</strong></p>
+    <pre><code>{
+  "virtualIbanId":"v_123",
+  "balance": {...},
+  "transactions": [
+    {"transactionId":"tx1","timestamp":"...","type":"CREDIT","amount":100.00,"balanceAfter":100.00,"narration":"..."},
+    ...
+  ],
+  "page":1,"size":50,"total":125
+}</code></pre>
+    
+    <h3>7.8 Statement / Transactions Inquiry by Merchant (Pool Account)</h3>
+    <p><code>GET /merchants/{merchantId}/pool-account/statements?from=...&to=...</code></p>
+    <p>Returns pool-level ledger (summary & transactions) + aggregated balances across IBANs.</p>
+    
+    <h3>7.9 Additional Recommended APIs</h3>
+    <ul>
+        <li><code>GET /merchants/{merchantId}/virtual-ibans</code> (list with filters)</li>
+        <li><code>PATCH /virtual-ibans/{id}</code> (update name, notes, status: BLOCK/UNBLOCK/CLOSE)</li>
+        <li><code>POST /transfers/{transactionId}/cancel</code> (cancel pending transfer if rules allow)</li>
+        <li>Webhook endpoints:
+            <ul>
+                <li><code>POST /webhooks/t24/transfer-status</code> — inbound T24 notifications (signed).</li>
+            </ul>
+        </li>
+        <li>Admin:
+            <ul>
+                <li><code>GET /admin/reconciliation/{merchantId}?date=2025-10-28</code></li>
+                <li><code>GET /audit/transactions/{transactionId}</code></li>
+            </ul>
+        </li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>8. Data Model (Tables)</h2>
+    
+    <h3>merchants</h3>
+    <ul>
+        <li><code>merchant_id</code> (PK), <code>name</code>, <code>pool_account_id</code> (FK), <code>currency</code>, <code>created_at</code>, <code>metadata(json)</code></li>
+    </ul>
+    
+    <h3>pool_accounts</h3>
+    <ul>
+        <li><code>pool_account_id</code> (PK), <code>merchant_id</code> (FK), <code>bank_account_ref</code> (T24 ID), <code>balance_amount</code>, <code>currency</code>, <code>last_reconciled_at</code></li>
+    </ul>
+    
+    <h3>virtual_ibans</h3>
+    <ul>
+        <li><code>virtual_iban_id</code> (PK), <code>merchant_id</code> (FK), <code>iban</code> (unique), <code>name</code>, <code>status</code>, <code>currency</code>, <code>created_at</code>, <code>metadata</code></li>
+    </ul>
+    
+    <h3>ledger_entries</h3>
+    <ul>
+        <li><code>entry_id</code> (PK), <code>transaction_id</code> (grouping), <code>account_type</code> (VIRTUAL_IBAN|POOL), <code>account_id</code>, <code>debit</code>, <code>credit</code>, <code>balance_after</code>, <code>timestamp</code>, <code>narration</code>, <code>metadata</code></li>
+    </ul>
+    
+    <h3>transactions (logical)</h3>
+    <ul>
+        <li><code>transaction_id</code> (PK), <code>type</code> (INTERNAL|OUTBOUND|INBOUND), <code>status</code> (PENDING|COMPLETED|FAILED|CANCELLED), <code>from_account</code>, <code>to_account</code>, <code>amount</code>, <code>currency</code>, <code>created_at</code>, <code>updated_at</code>, <code>idempotency_key</code>, <code>t24_ref</code></li>
+    </ul>
+    
+    <h3>t24_events (store callbacks)</h3>
+    <ul>
+        <li><code>t24_event_id</code>, <code>payload</code>, <code>received_at</code>, <code>status</code>, <code>processed_at</code>, <code>related_transaction_id</code></li>
+    </ul>
+    
+    <h3>audit_log</h3>
+    <ul>
+        <li><code>id</code>, <code>actor</code>, <code>action</code>, <code>target</code>, <code>payload</code>, <code>timestamp</code></li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>9. Key Workflows (Sequence Summary)</h2>
+    
+    <h3>9.1 Internal Transfer (Same Pool)</h3>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <img src="diagrams/02_internal_transfer.png" alt="Internal Transfer Sequence" style="max-width: 100%; height: auto;" />
+        <p><strong>Diagram 2: Internal Transfer Sequence (Same Pool)</strong></p>
+    </div>
+    
+    <p><strong>Detailed Steps:</strong></p>
+    <ol>
+        <li>API <code>POST /transfers</code></li>
+        <li>Validate IDs, currencies, sufficient balance.</li>
+        <li>DB Txn:
+            <ul>
+                <li>Create <code>transaction</code> record (COMPLETED).</li>
+                <li>Insert two <code>ledger_entries</code> (debit source, credit dest).</li>
+                <li>Update cached balances (or compute from ledger).</li>
+            </ul>
+        </li>
+        <li>Return <code>COMPLETED</code> with balances.</li>
+    </ol>
+    
+    <h3>9.2 External Transfer (Different Pools) — Optimistic Pattern</h3>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <img src="diagrams/03_external_transfer.png" alt="External Transfer Sequence" style="max-width: 100%; height: auto;" />
+        <p><strong>Diagram 3: External Transfer Sequence (Cross-Pool via T24)</strong></p>
+    </div>
+    
+    <p><strong>Detailed Steps:</strong></p>
+    <ol>
+        <li>API <code>POST /transfers</code> → create <code>transaction</code> with <code>PENDING</code>.</li>
+        <li>DB Txn:
+            <ul>
+                <li>Create hold/debit entry on source virtual IBAN and reduce available balance.</li>
+                <li>Create pending ledger entry for T24 (status PENDING).</li>
+            </ul>
+        </li>
+        <li>Call T24 API (synchronous request or an outbound message to bank).</li>
+        <li>On T24 success:
+            <ul>
+                <li>Create credit ledger entries on destination pool/virtual IBAN.</li>
+                <li>Mark <code>transaction</code> as <code>COMPLETED</code>, link T24 ref.</li>
+            </ul>
+        </li>
+        <li>On T24 failure/timeouts:
+            <ul>
+                <li>Release hold, mark <code>transaction</code> as FAILED, write error reasons.</li>
+            </ul>
+        </li>
+        <li>Ensure idempotency (T24 may call callback later — match by <code>transaction_id</code>/<code>t24_ref</code>/<code>idempotency_key</code>).</li>
+    </ol>
+    
+    <h3>9.3 Incoming Bank Deposit (Credit IBAN)</h3>
+    <ul>
+        <li>T24 notifies engine (webhook) with <code>bank_ref</code>, <code>destination_pool</code>, <code>amount</code>.</li>
+        <li>Engine maps incoming to <code>virtual_iban</code> (via IBAN) and creates <code>COMPLETED</code> ledger credit entry.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>10. Error Handling & Statuses</h2>
+    <ul>
+        <li>Use standard HTTP codes:
+            <ul>
+                <li><code>200</code> OK, <code>201</code> Created, <code>202</code> Accepted (async), <code>400</code> Bad Request, <code>401</code> Unauthorized, <code>403</code> Forbidden, <code>404</code> Not Found, <code>409</code> Conflict (insufficient funds or version conflict), <code>422</code> Unprocessable (validation), <code>500</code> Internal.</li>
+            </ul>
+        </li>
+        <li>Business error codes in body:
+            <pre><code>{"code":"INSUFFICIENT_FUNDS","message":"Insufficient available balance.","details":{}}</code></pre>
+        </li>
+        <li>For money-moving endpoints, 409 on insufficient funds; 202 Accepted when external transfer queued.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>11. Idempotency & Duplicate Prevention</h2>
+    <ul>
+        <li>Require <code>Idempotency-Key</code> header for all POST operations that change money state.</li>
+        <li>Store idempotency record: <code>{key, request_hash, result, created_at}</code>; reuse result on repeated requests.</li>
+        <li>Enforce idempotency window (e.g., 24 hours or configurable).</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>12. Security & Compliance</h2>
+    <ul>
+        <li>TLS 1.3 for all traffic.</li>
+        <li>OAuth 2.0 / JWT for merchants, with scopes:
+            <ul>
+                <li><code>viban.read</code>, <code>viban.write</code>, <code>transfers.create</code>, <code>transfers.read</code>, <code>admin.*</code></li>
+            </ul>
+        </li>
+        <li>mTLS for T24 integration & webhooks (mutual TLS + HMAC signatures).</li>
+        <li>Role-based access for admin endpoints.</li>
+        <li>Audit log every change (who, what, when).</li>
+        <li>Rate limiting: default 100 req/min per merchant; adjustable.</li>
+        <li>Data encryption at rest (sensitive metadata), and in transit.</li>
+        <li>Log masking for PII.</li>
+        <li>AML & KYC hooks: suspicious transaction flags, limits, and blocking.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>13. Reconciliation & Admin Processes</h2>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <img src="diagrams/05_reconciliation.png" alt="Reconciliation Flow" style="max-width: 100%; height: auto;" />
+        <p><strong>Diagram 5: Reconciliation Flow (T24 ↔ Engine)</strong></p>
+    </div>
+    
+    <h3>13.1 Daily Reconciliation Job</h3>
+    <ul>
+        <li><strong>Daily reconciliation job:</strong>
+            <ul>
+                <li>Pull T24 statements for each pool account.</li>
+                <li>Match T24 transfers to engine transactions (by <code>t24_ref</code>, amount, timestamp).</li>
+                <li>Generate reconciliation reports: matched / unmatched / outstanding holds.</li>
+            </ul>
+        </li>
+    </ul>
+    
+    <h3>13.2 Exception Handling & Auditing</h3>
+    <ul>
+        <li><strong>Exceptions:</strong> operations team resolves unmatched items; a manual settle/correct endpoint available.</li>
+        <li><strong>Auditing:</strong> immutable audit trail + ability to export per merchant.</li>
+    </ul>
+    
+    <h3>13.3 Webhooks & Notifications</h3>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <img src="diagrams/07_webhooks.png" alt="Webhooks & Notification Flow" style="max-width: 100%; height: auto;" />
+        <p><strong>Diagram 7: Webhooks & Notification Flow</strong></p>
+    </div>
+</div>
+
+<div class="section">
+    <h2>14. Monitoring & Observability</h2>
+    <ul>
+        <li>Metrics: tx/sec, pending external transfers, reconciliation mismatch count, error rates, latency.</li>
+        <li>Tracing: distributed traces for flow across engine → T24.</li>
+        <li>Alerts: failed reconciliation > threshold, transfer failure rate spike, P99 latency > threshold.</li>
+        <li>Logs stored centrally and searchable with structured fields (transactionId, merchantId, iban).</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>15. Testing & QA Checklist</h2>
+    <ul>
+        <li>Unit tests on ledger logic.</li>
+        <li>Integration tests for internal transfers (concurrency stress tests).</li>
+        <li>End-to-end tests simulating T24 success/failures (stubs/mocks).</li>
+        <li>Idempotency tests (replay same request).</li>
+        <li>Reconciliation scenarios with missing T24 callbacks.</li>
+        <li>Security tests: auth, roles, rate limits, input validation, pen tests.</li>
+        <li>Load tests: simulate realistic merchant volumes and bursts.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>16. Operational & Deployment Notes</h2>
+    <ul>
+        <li>Deploy as microservice with database (Postgres recommended) and job workers for async tasks and reconciliation.</li>
+        <li>Use Kafka or message queue for communication to/from T24 to avoid single-point failures.</li>
+        <li>Database: use migrations and backups; enable point-in-time recovery.</li>
+        <li>Consider read replicas for read-heavy statement queries.</li>
+        <li>Provide a sandbox environment for merchants + T24 integration testing.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>17. Example SQL Snippets (Postgres)</h2>
+    <pre><code>CREATE TABLE merchants (
+  merchant_id uuid PRIMARY KEY,
+  name text NOT NULL,
+  pool_account_id uuid,
+  created_at timestamptz DEFAULT now(),
+  metadata jsonb DEFAULT '{}'
+);
+
+CREATE TABLE virtual_ibans (
+  virtual_iban_id uuid PRIMARY KEY,
+  merchant_id uuid REFERENCES merchants(merchant_id),
+  iban text UNIQUE NOT NULL,
+  name text,
+  status text NOT NULL DEFAULT 'ACTIVE',
+  currency char(3) NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  metadata jsonb DEFAULT '{}'
+);
+
+CREATE TABLE transactions (
+  transaction_id uuid PRIMARY KEY,
+  type text NOT NULL,
+  status text NOT NULL,
+  from_account text,
+  to_account text,
+  amount numeric(20,4) NOT NULL,
+  currency char(3) NOT NULL,
+  idempotency_key text,
+  t24_ref text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE ledger_entries (
+  entry_id uuid PRIMARY KEY,
+  transaction_id uuid REFERENCES transactions(transaction_id),
+  account_type text NOT NULL,
+  account_id uuid,
+  debit numeric(20,4) DEFAULT 0,
+  credit numeric(20,4) DEFAULT 0,
+  balance_after numeric(20,4),
+  timestamp timestamptz DEFAULT now(),
+  narration text,
+  metadata jsonb DEFAULT '{}'
+);</code></pre>
+</div>
+
+<div class="section">
+    <h2>18. Edge Cases, Checks & Recommendations (Must-have)</h2>
+    <ul>
+        <li><strong>Currency mismatch:</strong> reject or route through FX (out of scope unless required).</li>
+        <li><strong>Blocked IBANs:</strong> block movement and trigger alerts; admin can unblock.</li>
+        <li><strong>Partial failures:</strong> ensure rollback semantics; if T24 call succeeds but webhook lost, use reconciliation to finalize.</li>
+        <li><strong>Clock skew:</strong> use UTC timestamps; reconcile time windows.</li>
+        <li><strong>Eventual consistent caches:</strong> don't rely on cached balance for authorizing transfers unless consistent guarantee provided.</li>
+        <li><strong>Limits:</strong> per-transaction & daily limits per merchant and per IBAN configurable.</li>
+        <li><strong>Privacy:</strong> do not expose full IBAN in logs; mask where possible.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>19. Diagram Reference</h2>
+    
+    <p>All diagrams are now integrated into their relevant sections throughout this document:</p>
+    <ul>
+        <li><strong>Diagram 1 (Section 6.1):</strong> System Architecture Overview</li>
+        <li><strong>Diagram 2 (Section 9.1):</strong> Internal Transfer Sequence</li>
+        <li><strong>Diagram 3 (Section 9.2):</strong> External Transfer Sequence</li>
+        <li><strong>Diagram 4 (Section 6.4):</strong> Database ERD</li>
+        <li><strong>Diagram 5 (Section 13):</strong> Reconciliation Flow</li>
+        <li><strong>Diagram 6 (Section 7):</strong> Merchant API Interaction Flow</li>
+        <li><strong>Diagram 7 (Section 13.3):</strong> Webhooks & Notification Flow</li>
+    </ul>
+    
+    <p><strong>PlantUML Source Files:</strong> All diagram sources are available in the <code>diagrams/</code> directory for rendering.</p>
+    
+    <p><strong>How to Render:</strong> Visit <a href="https://www.plantuml.com/plantuml/" target="_blank">PlantUML Online Server</a>, paste the content from any <code>.puml</code> file, and export as PNG or SVG.</p>
+</div>
+
+<div class="section">
+    <h2>20. Roadmap & Optional Features</h2>
+    <ul>
+        <li><strong>Webhooks for merchants:</strong> on transaction status updates.</li>
+        <li><strong>Batch payouts:</strong> merchants upload batch files for payouts, engine executes and tracks.</li>
+        <li><strong>Reporting portal:</strong> for statements, reconciliation, KYC status.</li>
+        <li><strong>Rate limits & quotas</strong> management per merchant.</li>
+        <li><strong>GraphQL</strong> alternative for rich queries (optional).</li>
+        <li><strong>Multi-currency & FX</strong> support.</li>
+    </ul>
+</div>
+
+<div class="section">
+    <h2>21. Deliverables & Next Steps (Recommended)</h2>
+    <ol>
+        <li>Confirm assumptions about IBAN issuance (engine vs T24).</li>
+        <li>Define exact T24 APIs: endpoints, auth, message formats, callback behavior (we will create adapter).</li>
+        <li>Finalize currency/FX requirements and AML/KYC rules.</li>
+        <li>Build minimal MVP APIs: create IBAN, internal transfer, statement inquiry, T24 integration stub.</li>
+        <li>Implement ledger-first model, idempotency, reconciliation worker.</li>
+        <li>Create test harness for T24 simulation.</li>
+    </ol>
+</div>
+
+<div class="section">
+    <h2>22. Summary Validation Checklist</h2>
+    <ul>
+        <li>☐ Single pool per merchant — confirmed requirement.</li>
+        <li>☐ Engine handles internal transfers internally.</li>
+        <li>☐ Engine calls T24 for cross-pool transfers and reflects the balances.</li>
+        <li>☐ APIs for create (single/bulk), transfer, credit, statements implemented.</li>
+        <li>☐ Double-entry ledger, idempotency, reconciliation, monitoring, security in place.</li>
+    </ul>
+</div>
+
+</body>
+</html>
